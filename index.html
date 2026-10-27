@@ -164,6 +164,15 @@
       </div>
     </div>
 
+    <div class="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl bg-slate-900 border border-slate-800">
+      <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+        <input id="select-visible-movies" type="checkbox" onchange="toggleSelectVisible(this.checked)" class="accent-indigo-500">
+        Seleccionar pel·lícules visibles
+      </label>
+      <span id="selected-movies-count" class="text-xs text-slate-400">0 seleccionades</span>
+      <button id="delete-selected-btn" onclick="deleteSelectedMovies()" disabled class="ml-auto px-3 py-1.5 rounded-lg bg-rose-700 hover:bg-rose-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold">🗑️ Eliminar seleccionades</button>
+    </div>
+
     <!-- MOVIE CARDS CONTAINER -->
     <div id="movies-container" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3.5">
       <!-- Cards rendered via JS -->
@@ -195,13 +204,15 @@
     <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden p-5 text-xs">
       <div class="flex items-center justify-between pb-3 border-b border-slate-800">
         <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
-          <span>🖼️</span> Canviar o afegir car&agrave;tula
+          <span>🖼️</span> Editar pel·lícula
         </h3>
         <button onclick="closeEditPosterModal()" class="text-slate-400 hover:text-white p-1">✕</button>
       </div>
       <div class="mt-3">
         <p id="edit-poster-title" class="text-sm font-bold text-indigo-300 mb-2"></p>
-        <p class="text-slate-400 text-[11px] mb-3">Pots cercar la imatge a Google Imatges i enganxar-ne l'enllaç aquí:</p>
+        <label for="edit-movie-title-input" class="block font-semibold text-slate-300 mb-1">Títol de la pel·lícula:</label>
+        <input type="text" id="edit-movie-title-input" maxlength="250" oninput="updatePosterSearchLinks()" placeholder="Escriu el títol que vols mostrar" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 mb-3">
+        <p class="text-slate-400 text-[11px] mb-3">Pots canviar el títol i la caràtula des d'aquí. Els enllaços de cerca s'actualitzen amb el títol.</p>
         
         <div class="flex flex-wrap gap-2 mb-3.5">
           <a id="google-search-link" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold transition-colors cursor-pointer">
@@ -224,7 +235,7 @@
               Cancel&middot;lar
             </button>
             <button type="button" onclick="saveCustomPoster()" class="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold shadow-md">
-              Desar car&agrave;tula
+              Desar canvis
             </button>
           </div>
         </div>
@@ -377,10 +388,14 @@
     let titleOverrides = { ...EMBEDDED_BACKUP.titleOverrides };
     try {
       const savedTitles = localStorage.getItem('movie_title_overrides');
-      if (savedTitles) titleOverrides = { ...JSON.parse(savedTitles), ...EMBEDDED_BACKUP.titleOverrides };
+      if (savedTitles) titleOverrides = { ...EMBEDDED_BACKUP.titleOverrides, ...JSON.parse(savedTitles) };
     } catch (e) {}
 
-    let ALL_MOVIES = [...BASE_MOVIES, ...customMovies].map(m => {
+    let deletedMovieIds = new Set();
+    try { deletedMovieIds = new Set(JSON.parse(localStorage.getItem('movie_deleted_ids') || '[]').map(String)); } catch (e) {}
+    let selectedMovieIds = new Set();
+
+    let ALL_MOVIES = [...BASE_MOVIES, ...customMovies].filter(m => !deletedMovieIds.has(String(m.id))).map(m => {
       return {
         ...m,
         title: sanitizeText(titleOverrides[String(m.id)] || m.title),
@@ -470,6 +485,74 @@
       return "bg-teal-500/20 text-teal-300 border-teal-500/30";
     }
 
+    function updateSelectionControls() {
+      const count = selectedMovieIds.size;
+      const countEl = document.getElementById('selected-movies-count');
+      const deleteBtn = document.getElementById('delete-selected-btn');
+      if (countEl) countEl.textContent = `${count} seleccionada${count === 1 ? '' : 's'}`;
+      if (deleteBtn) deleteBtn.disabled = count === 0;
+      const selectAll = document.getElementById('select-visible-movies');
+      if (selectAll) {
+        const visibleIds = filteredMovies.map(m => String(m.id));
+        selectAll.checked = visibleIds.length > 0 && visibleIds.every(id => selectedMovieIds.has(id));
+        selectAll.indeterminate = visibleIds.some(id => selectedMovieIds.has(id)) && !selectAll.checked;
+      }
+    }
+
+    function toggleMovieSelection(id, checked) {
+      const key = String(id);
+      if (checked) selectedMovieIds.add(key); else selectedMovieIds.delete(key);
+      updateSelectionControls();
+    }
+
+    function toggleSelectVisible(checked) {
+      filteredMovies.forEach(m => {
+        if (checked) selectedMovieIds.add(String(m.id));
+        else selectedMovieIds.delete(String(m.id));
+      });
+      applyFilters();
+      updateSelectionControls();
+    }
+
+    function deleteSelectedMovies() {
+      deleteMovies(Array.from(selectedMovieIds));
+    }
+
+    function deleteMovies(ids) {
+      const keys = Array.from(new Set(ids.map(String)));
+      if (!keys.length) return;
+      const names = keys.map(id => ALL_MOVIES.find(m => String(m.id) === id)?.title).filter(Boolean);
+      const preview = names.slice(0, 4).join('\n');
+      const extra = names.length > 4 ? `\n… i ${names.length - 4} més` : '';
+      if (!confirm(`Vols eliminar ${keys.length} pel·lícula${keys.length === 1 ? '' : 'es'} del catàleg?\n\n${preview}${extra}\n\nAquesta acció es pot desfer restaurant una còpia de seguretat anterior.`)) return;
+      keys.forEach(id => {
+        deletedMovieIds.add(id);
+        favorites.delete(Number(id)); favorites.delete(id);
+        delete posterCache[id];
+        delete titleOverrides[id];
+      });
+      customMovies = customMovies.filter(m => !keys.includes(String(m.id)));
+      selectedMovieIds.clear();
+      try {
+        localStorage.setItem('movie_deleted_ids', JSON.stringify(Array.from(deletedMovieIds)));
+        localStorage.setItem('movie_custom_entries', JSON.stringify(customMovies));
+        localStorage.setItem('movie_favorites', JSON.stringify(Array.from(favorites)));
+        localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache));
+        localStorage.setItem('movie_title_overrides', JSON.stringify(titleOverrides));
+      } catch (e) {}
+      rebuildMoviesAfterBackupImport();
+      updateFavoritesBadge();
+      updateSelectionControls();
+      showToast(`${keys.length} pel·lícula${keys.length === 1 ? '' : 'es'} eliminada${keys.length === 1 ? '' : 'es'}.`);
+    }
+
+    function editMovieTitle(id) {
+      // El títol també s'edita dins del mateix editor que la caràtula.
+      openEditPosterModal(id);
+      const input = document.getElementById('edit-movie-title-input');
+      if (input) input.focus();
+    }
+
     function applyFilters() {
       const q = normalizeStr(document.getElementById('search-input').value.trim());
       const disk = document.getElementById('filter-disk').value;
@@ -530,6 +613,7 @@
         document.getElementById('empty-state').classList.add('hidden');
         renderNextBatch();
       }
+      updateSelectionControls();
     }
 
     const loadingPosters = new Set();
@@ -729,7 +813,11 @@
                 </div>
 
                 <!-- Floating action buttons on top of poster -->
+                <div class="absolute top-2 left-2 z-10">
+                  <input type="checkbox" aria-label="Selecciona ${escapeHtml(m.title)}" ${selectedMovieIds.has(String(m.id)) ? 'checked' : ''} onchange="toggleMovieSelection(${m.id}, this.checked)" onclick="event.stopPropagation()" class="w-4 h-4 accent-indigo-500 rounded shadow cursor-pointer" title="Selecciona per eliminar">
+                </div>
                 <div class="absolute top-2 right-2 flex items-center gap-1">
+                  <button onclick="event.stopPropagation(); deleteMovies([${m.id}])" class="w-7 h-7 rounded-full bg-rose-700/90 hover:bg-rose-600 backdrop-blur-md flex items-center justify-center text-[11px] text-white hover:scale-110 transition-transform shadow" title="Eliminar pel·lícula">🗑️</button>
                   <a href="${youtubeTrailerUrl(m)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="w-7 h-7 rounded-full bg-red-600/90 hover:bg-red-500 backdrop-blur-md flex items-center justify-center text-[11px] text-white hover:scale-110 transition-transform shadow" title="Cerca el tràiler a YouTube">▶</a>
                   <button onclick="openEditPosterModal(${m.id}, event)" class="w-7 h-7 rounded-full bg-slate-950/70 backdrop-blur-md flex items-center justify-center text-[11px] text-slate-300 hover:text-white hover:scale-110 active:scale-125 transition-transform shadow" title="Canviar o afegir caràtula">
                     ✏️
@@ -780,6 +868,8 @@
                   💾 ${escapeHtml(m.disk)}
                 </span>
                 <div class="flex items-center gap-1">
+                  <input type="checkbox" aria-label="Selecciona ${escapeHtml(m.title)}" ${selectedMovieIds.has(String(m.id)) ? 'checked' : ''} onchange="toggleMovieSelection(${m.id}, this.checked)" class="w-3.5 h-3.5 accent-indigo-500" title="Selecciona per eliminar">
+                  <button onclick="deleteMovies([${m.id}])" class="text-xs text-rose-400 hover:text-rose-300" title="Eliminar pel·lícula">🗑️</button>
                   <a href="${youtubeTrailerUrl(m)}" target="_blank" rel="noopener noreferrer" class="text-xs text-red-400 hover:text-red-300" title="Cerca el tràiler a YouTube">▶️</a>
                   <button onclick="openEditPosterModal(${m.id}, event)" class="text-xs text-slate-500 hover:text-indigo-300" title="Editar caràtula">✏️</button>
                   <button onclick="toggleFavorite(${m.id}, this)" class="text-xs text-slate-500 hover:text-rose-400">
@@ -925,17 +1015,27 @@
     function openEditPosterModal(id, e) {
       if (e) e.stopPropagation();
       editingMovieId = id;
-      const m = ALL_MOVIES.find(x => x.id === id);
+      const m = ALL_MOVIES.find(x => String(x.id) === String(id));
       if (!m) return;
 
       document.getElementById('edit-poster-title').textContent = m.title;
+      document.getElementById('edit-movie-title-input').value = m.title;
       document.getElementById('edit-poster-input').value = posterCache[id] || m.poster || '';
-      
-      const q = encodeURIComponent(m.title + ' poster');
-      document.getElementById('google-search-link').href = `https://www.google.com/search?tbm=isch&q=${q}`;
-      
+      updatePosterSearchLinks();
       document.getElementById('poster-modal').classList.remove('hidden');
-      document.getElementById('edit-poster-input').focus();
+      document.getElementById('edit-movie-title-input').focus();
+      document.getElementById('edit-movie-title-input').select();
+    }
+
+    function updatePosterSearchLinks() {
+      const title = (document.getElementById('edit-movie-title-input')?.value || '').trim();
+      const q = encodeURIComponent(title + ' poster');
+      const google = document.getElementById('google-search-link');
+      const bing = document.getElementById('bing-search-link');
+      const youtube = document.getElementById('youtube-search-link');
+      if (google) google.href = `https://www.google.com/search?tbm=isch&q=${q}`;
+      if (bing) bing.href = `https://www.bing.com/images/search?q=${q}`;
+      if (youtube) youtube.href = `https://www.youtube.com/results?search_query=${encodeURIComponent(title + ' tràiler')}`;
     }
 
     function closeEditPosterModal() {
@@ -944,30 +1044,33 @@
     }
 
     function saveCustomPoster() {
-      if (!editingMovieId) return;
+      if (editingMovieId === null || editingMovieId === undefined) return;
+      const id = String(editingMovieId);
       const url = document.getElementById('edit-poster-input').value.trim();
-      
-      posterCache[editingMovieId] = url || null;
-      try {
-        localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache));
-      } catch(e) {}
-
-      const imgEl = document.getElementById(`poster-img-${editingMovieId}`);
-      const phEl = document.getElementById(`poster-ph-${editingMovieId}`);
-      if (imgEl && phEl) {
-        if (url) {
-          imgEl.src = url;
-          imgEl.classList.remove('hidden');
-          phEl.classList.add('hidden');
-        } else {
-          imgEl.src = '';
-          imgEl.classList.add('hidden');
-          phEl.classList.remove('hidden');
-        }
+      const newTitle = document.getElementById('edit-movie-title-input').value.trim();
+      if (!newTitle) {
+        alert('El títol no pot quedar buit.');
+        document.getElementById('edit-movie-title-input').focus();
+        return;
       }
 
+      const movie = ALL_MOVIES.find(m => String(m.id) === id);
+      if (movie && movie.title !== newTitle) {
+        titleOverrides[id] = newTitle;
+        movie.title = newTitle;
+        const custom = customMovies.find(m => String(m.id) === id);
+        if (custom) custom.title = newTitle;
+      }
+      posterCache[id] = url || null;
+      try {
+        localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache));
+        localStorage.setItem('movie_title_overrides', JSON.stringify(titleOverrides));
+        localStorage.setItem('movie_custom_entries', JSON.stringify(customMovies));
+      } catch(e) {}
+
       closeEditPosterModal();
-      showToast("Caràtula actualitzada! 🎬");
+      applyFilters();
+      showToast('Títol i caràtula desats correctament! 🎬');
     }
 
     function removeMoviePoster() {
@@ -1115,7 +1218,8 @@
         posterCache: posterCache,
         titleOverrides: titleOverrides,
         customMovies: customMovies,
-        favorites: Array.from(favorites)
+        favorites: Array.from(favorites),
+        deletedMovieIds: Array.from(deletedMovieIds)
       };
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -1162,6 +1266,10 @@
         customMovies = Array.from(byId.values());
         const incomingFavorites = Array.isArray(parsed.favorites) ? parsed.favorites : [];
         incomingFavorites.forEach(id => favorites.add(id));
+        if (Array.isArray(parsed.deletedMovieIds)) {
+          deletedMovieIds = new Set(parsed.deletedMovieIds.map(String));
+          localStorage.setItem('movie_deleted_ids', JSON.stringify(Array.from(deletedMovieIds)));
+        }
 
         localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache));
         localStorage.setItem('movie_custom_entries', JSON.stringify(customMovies));
@@ -1177,7 +1285,7 @@
     }
 
     function rebuildMoviesAfterBackupImport() {
-      ALL_MOVIES = [...BASE_MOVIES, ...customMovies].map(m => ({
+      ALL_MOVIES = [...BASE_MOVIES, ...customMovies].filter(m => !deletedMovieIds.has(String(m.id))).map(m => ({
         ...m,
         title: sanitizeText(titleOverrides[String(m.id)] || m.title),
         category: sanitizeText(m.category),
