@@ -73,9 +73,13 @@
           <span id="fav-count" class="bg-rose-500/20 text-rose-300 px-1.5 py-0.2 rounded-full text-[11px] font-bold">0</span>
         </button>
 
-        <button onclick="exportCatalog()" title="Exportar dades (JSON)" class="p-1.5 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors hidden sm:block">
-          💾
+        <button onclick="exportCatalog()" title="Desar còpia de seguretat" aria-label="Desar còpia de seguretat" class="p-1.5 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors">
+          💾 <span class="hidden lg:inline">Còpia</span>
         </button>
+        <button onclick="document.getElementById('backup-file-input').click()" title="Restaurar còpia de seguretat" aria-label="Restaurar còpia de seguretat" class="p-1.5 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors">
+          📥 <span class="hidden lg:inline">Restaurar</span>
+        </button>
+        <input id="backup-file-input" type="file" accept=".json,application/json" class="hidden" onchange="importCatalogBackup(event)">
       </div>
     </div>
 
@@ -196,9 +200,13 @@
         <p id="edit-poster-title" class="text-sm font-bold text-indigo-300 mb-2"></p>
         <p class="text-slate-400 text-[11px] mb-3">Pots cercar la imatge a Google Imatges i enganxar-ne l'enllaç aquí:</p>
         
-        <a id="google-search-link" target="_blank" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold mb-3.5 transition-colors cursor-pointer">
-          <span>🔍</span> Buscar a Google Imatges <span class="text-indigo-400">↗</span>
-        </a>
+        <div class="flex flex-wrap gap-2 mb-3.5">
+          <a id="google-search-link" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold transition-colors cursor-pointer">
+            <span>🔍</span> Google Imatges ↗
+          </a>
+          <a id="bing-search-link" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold transition-colors cursor-pointer">Bing Imatges ↗</a>
+          <a id="youtube-search-link" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-white border border-red-600 font-semibold transition-colors cursor-pointer">▶ Tràiler ↗</a>
+        </div>
 
         <label class="block font-semibold text-slate-300 mb-1">Enllaç de la imatge (URL de la car&agrave;tula):</label>
         <input type="url" id="edit-poster-input" placeholder="https://... o enllaç d'imatge" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 mb-2">
@@ -346,6 +354,8 @@
       if (savedPosters) posterCache = JSON.parse(savedPosters);
     } catch (e) {}
 
+    // Les cerques fallides antigues es guardaven com a null i bloquejaven nous intents.
+    Object.keys(posterCache).forEach(id => { if (!posterCache[id]) delete posterCache[id]; });
     Object.assign(posterCache, PREFETCHED_POSTERS);
 
     let ALL_MOVIES = [...BASE_MOVIES, ...customMovies].map(m => {
@@ -502,37 +512,159 @@
 
     const loadingPosters = new Set();
 
-    function fetchPosterAsync(movieId, title) {
-      if (posterCache[movieId] !== undefined || loadingPosters.has(movieId)) return;
+    function normaliseMovieQuery(title) {
+      return (title || "")
+        .replace(/\[[^\]]*\]/g, " ")
+        .replace(/\([^)]*\)/g, " ")
+        .replace(/\b(1080p|720p|bluray|bdrip|hdrip|dvdrip|dvd|spanish|castellano|catal[aà]|xvid|h264|ac3|web-dl)\b/gi, " ")
+        .replace(/[._-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    async function getPosterFromTMDB(query, year) {
+      const searches = [];
+      const yearParam = year && /^\d{4}$/.test(String(year)) ? `&year=${encodeURIComponent(year)}` : "";
+      searches.push(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(query)}&language=es-ES${yearParam}`);
+      searches.push(`https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(query)}&language=en-US`);
+      for (const url of searches) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) continue;
+          const data = await response.json();
+          const results = data.results || [];
+          // Prioritza l'any quan el tenim; després, el primer resultat amb cartell.
+          const result = (year ? results.find(x => x.poster_path && String(x.release_date || '').startsWith(String(year))) : null)
+            || results.find(item => item.poster_path);
+          if (result) return `https://image.tmdb.org/t/p/w500${result.poster_path}`;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    async function getPosterFromAltAPI(query, year) {
+      // Segona base de dades compatible amb TMDB; no requereix clau.
+      const urls = [
+        `https://api.amodb.dev/3/search/movie?query=${encodeURIComponent(query)}&language=es-ES${year ? `&year=${encodeURIComponent(year)}` : ''}`,
+        `https://api.amodb.dev/3/search/movie?query=${encodeURIComponent(query)}&language=en-US`
+      ];
+      for (const url of urls) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) continue;
+          const data = await response.json();
+          const results = data.results || [];
+          const result = (year ? results.find(x => x.poster_path && String(x.release_date || '').startsWith(String(year))) : null)
+            || results.find(x => x.poster_path);
+          if (result) return `https://image.tmdb.org/t/p/w500${result.poster_path}`;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    async function getPosterFromWikipedia(query) {
+      const endpoints = [
+        `https://es.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + " película")}&gsrnamespace=0&gsrlimit=8&prop=pageimages&piprop=thumbnail&pithumbsize=500&format=json&origin=*`,
+        `https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + " film")}&gsrnamespace=0&gsrlimit=8&prop=pageimages&piprop=thumbnail&pithumbsize=500&format=json&origin=*`
+      ];
+      for (const url of endpoints) {
+        try {
+          const response = await fetch(url);
+          if (!response.ok) continue;
+          const data = await response.json();
+          const pages = Object.values(data.query?.pages || {});
+          const page = pages.find(item => item.thumbnail?.source);
+          if (page) return page.thumbnail.source;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    async function getPosterFromCommons(query) {
+      // Últim intent de trobar una imatge relacionada a Wikimedia Commons.
+      const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query + ' film poster')}&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url&iiurlwidth=500&format=json&origin=*`;
+      try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const data = await response.json();
+        const pages = Object.values(data.query?.pages || {});
+        const page = pages.find(x => x.imageinfo && x.imageinfo[0] && (x.imageinfo[0].thumburl || x.imageinfo[0].url));
+        return page ? (page.imageinfo[0].thumburl || page.imageinfo[0].url) : null;
+      } catch (_) { return null; }
+    }
+
+    function makeFallbackPoster(title, year = '') {
+      // Garantia visual: si cap font no té la caràtula, mai no queda un requadre buit.
+      const safeTitle = String(title || 'Pel·lícula').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      const words = safeTitle.split(/\s+/);
+      const lines = [];
+      let line = '';
+      for (const word of words) {
+        if ((line + ' ' + word).trim().length > 18 && line) { lines.push(line); line = word; }
+        else line = (line + ' ' + word).trim();
+      }
+      if (line) lines.push(line);
+      const textLines = lines.slice(0, 5).map((v, i) => `<text x="180" y="${330 + i*30}" text-anchor="middle" font-family="Arial,sans-serif" font-size="${i===0?22:20}" font-weight="700" fill="#f8fafc">${v}</text>`).join('');
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="540" viewBox="0 0 360 540"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#312e81"/><stop offset=".55" stop-color="#0f172a"/><stop offset="1" stop-color="#9f1239"/></linearGradient></defs><rect width="360" height="540" fill="url(#g)"/><circle cx="180" cy="170" r="82" fill="none" stroke="#c7d2fe" stroke-opacity=".35" stroke-width="3"/><rect x="130" y="120" width="100" height="100" rx="18" fill="#ffffff" fill-opacity=".08" stroke="#e0e7ff" stroke-opacity=".65" stroke-width="2"/><text x="180" y="184" text-anchor="middle" font-size="52">🎬</text>${textLines}<text x="180" y="500" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" letter-spacing="3" fill="#cbd5e1">${year || 'CATÀLEG DE PEL·LÍCULES'}</text></svg>`;
+      return 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg);
+    }
+
+    function handlePosterImageError(movieId) {
+      const imgEl = document.getElementById(`poster-img-${movieId}`);
+      const placeholderEl = document.getElementById(`poster-ph-${movieId}`);
+      const movie = ALL_MOVIES.find(x => String(x.id) === String(movieId));
+      if (!imgEl || !movie) { if (placeholderEl) placeholderEl.classList.remove('hidden'); return; }
+      imgEl.onerror = null;
+      imgEl.src = makeFallbackPoster(movie.title, movie.year || '');
+      imgEl.classList.remove('hidden');
+      if (placeholderEl) placeholderEl.classList.add('hidden');
+      // Esborra la URL trencada perquè es pugui tornar a provar més endavant.
+      delete posterCache[movieId];
+      try { localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache)); } catch (_) {}
+    }
+
+    async function fetchPosterAsync(movieId, title, year = '') {
+      if (posterCache[movieId] || loadingPosters.has(movieId)) return;
       loadingPosters.add(movieId);
+      const cleanQ = normaliseMovieQuery(title);
+      const aliases = {
+        "alita": { query: "Alita: Battle Angel", year: "2019" },
+        "alita 1080": { query: "Alita: Battle Angel", year: "2019" },
+        "100 vagines": { query: "100 vaginas", year: "2014" },
+        "el hombre de alcatraz": { query: "Birdman of Alcatraz", year: "1962" },
+        "tarzan": { query: "Tarzan", year: "1999" }
+      };
+      const alias = aliases[cleanQ.toLocaleLowerCase()];
+      const query = alias ? alias.query : cleanQ;
+      const queryYear = alias ? alias.year : year;
+      let posterUrl = await getPosterFromTMDB(query, queryYear);
+      if (!posterUrl) posterUrl = await getPosterFromAltAPI(query, queryYear);
+      if (!posterUrl) posterUrl = await getPosterFromWikipedia(query);
+      if (!posterUrl) posterUrl = await getPosterFromCommons(query);
 
-      const cleanQ = title.replace(/\s*\(\d{4}\)/, '').replace(/\[.*?\]/, '').trim();
-      const url = `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanQ)}&language=es-ES`;
+      loadingPosters.delete(movieId);
+      if (posterUrl) {
+        posterCache[movieId] = posterUrl;
+        try { localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache)); } catch (_) {}
+      }
+      const imgEl = document.getElementById(`poster-img-${movieId}`);
+      const placeholderEl = document.getElementById(`poster-ph-${movieId}`);
+      if (imgEl) {
+        imgEl.onerror = () => handlePosterImageError(movieId);
+        imgEl.onload = () => {
+          imgEl.classList.remove('hidden');
+          if (placeholderEl) placeholderEl.classList.add('hidden');
+        };
+        imgEl.src = posterUrl || makeFallbackPoster(title, year);
+        imgEl.classList.remove('hidden');
+        if (placeholderEl) placeholderEl.classList.add('hidden');
+      }
+    }
 
-      fetch(url)
-        .then(r => r.json())
-        .then(data => {
-          loadingPosters.delete(movieId);
-          let posterUrl = null;
-          if (data.results && data.results.length > 0 && data.results[0].poster_path) {
-            posterUrl = `https://image.tmdb.org/t/p/w300${data.results[0].poster_path}`;
-          }
-          posterCache[movieId] = posterUrl;
-          try {
-            localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache));
-          } catch(e) {}
-
-          const imgEl = document.getElementById(`poster-img-${movieId}`);
-          const placeholderEl = document.getElementById(`poster-ph-${movieId}`);
-          if (imgEl && posterUrl) {
-            imgEl.src = posterUrl;
-            imgEl.classList.remove('hidden');
-            if (placeholderEl) placeholderEl.classList.add('hidden');
-          }
-        })
-        .catch(() => {
-          loadingPosters.delete(movieId);
-        });
+    function youtubeTrailerUrl(movie) {
+      const title = normaliseMovieQuery(movie.title);
+      const year = movie.year && /^\d{4}$/.test(String(movie.year)) ? ` ${movie.year}` : "";
+      return `https://www.youtube.com/results?search_query=${encodeURIComponent(title + year + " tráiler trailer")}`;
     }
 
     function renderNextBatch() {
@@ -551,7 +683,7 @@
 
         const posterUrl = posterCache[m.id] !== undefined ? posterCache[m.id] : m.poster;
         if (!posterUrl && posterCache[m.id] === undefined) {
-          fetchPosterAsync(m.id, m.title);
+          fetchPosterAsync(m.id, m.title, m.year);
         }
 
         if (currentViewMode === 'posters') {
@@ -566,7 +698,7 @@
                   alt="${escapeHtml(m.title)}" 
                   loading="lazy" 
                   class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${posterUrl ? '' : 'hidden'}"
-                  onerror="this.classList.add('hidden'); document.getElementById('poster-ph-${m.id}').classList.remove('hidden');"
+                  onerror="handlePosterImageError(${m.id})"
                 >
                 <div id="poster-ph-${m.id}" onclick="openEditPosterModal(${m.id}, event)" class="p-3 text-center cursor-pointer hover:bg-slate-800/80 transition-colors w-full h-full ${posterUrl ? 'hidden' : 'flex flex-col items-center justify-center'}" title="Fes clic per afegir caràtula">
                   <span class="text-3xl mb-1.5 opacity-60">🎬</span>
@@ -576,6 +708,7 @@
 
                 <!-- Floating action buttons on top of poster -->
                 <div class="absolute top-2 right-2 flex items-center gap-1">
+                  <a href="${youtubeTrailerUrl(m)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="w-7 h-7 rounded-full bg-red-600/90 hover:bg-red-500 backdrop-blur-md flex items-center justify-center text-[11px] text-white hover:scale-110 transition-transform shadow" title="Cerca el tràiler a YouTube">▶</a>
                   <button onclick="openEditPosterModal(${m.id}, event)" class="w-7 h-7 rounded-full bg-slate-950/70 backdrop-blur-md flex items-center justify-center text-[11px] text-slate-300 hover:text-white hover:scale-110 active:scale-125 transition-transform shadow" title="Canviar o afegir caràtula">
                     ✏️
                   </button>
@@ -625,6 +758,7 @@
                   💾 ${escapeHtml(m.disk)}
                 </span>
                 <div class="flex items-center gap-1">
+                  <a href="${youtubeTrailerUrl(m)}" target="_blank" rel="noopener noreferrer" class="text-xs text-red-400 hover:text-red-300" title="Cerca el tràiler a YouTube">▶️</a>
                   <button onclick="openEditPosterModal(${m.id}, event)" class="text-xs text-slate-500 hover:text-indigo-300" title="Editar caràtula">✏️</button>
                   <button onclick="toggleFavorite(${m.id}, this)" class="text-xs text-slate-500 hover:text-rose-400">
                     ${isFav ? '❤️' : '🤍'}
@@ -872,14 +1006,83 @@
     }
 
     function exportCatalog() {
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(ALL_MOVIES, null, 2));
-      const downloadAnchor = document.createElement('a');
-      downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute("download", "cataleg_pellicules_actualitzat.json");
-      document.body.appendChild(downloadAnchor);
-      downloadAnchor.click();
-      downloadAnchor.remove();
-      showToast("Catàleg exportat a JSON!");
+      // Còpia completa de les dades personals, no només de la llista base.
+      const backup = {
+        format: 'cataleg-pellicules-backup',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        posterCache: posterCache,
+        customMovies: customMovies,
+        favorites: Array.from(favorites)
+      };
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'copia_seguretat_cataleg_pellicules.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast('Còpia de seguretat desada! 💾');
+    }
+
+    async function importCatalogBackup(event) {
+      const input = event.target;
+      const file = input.files && input.files[0];
+      if (!file) return;
+      try {
+        const parsed = JSON.parse(await file.text());
+        // Admet també els JSON antics exportats per la versió inicial.
+        if (Array.isArray(parsed)) {
+          if (!confirm('Aquest és un catàleg JSON antic, no una còpia completa. Vols importar-ne les pel·lícules personalitzades que contingui?')) return;
+          const importedCustom = parsed.filter(m => m && m.isCustom && m.id != null);
+          const byId = new Map(customMovies.map(m => [String(m.id), m]));
+          importedCustom.forEach(m => byId.set(String(m.id), m));
+          customMovies = Array.from(byId.values());
+          localStorage.setItem('movie_custom_entries', JSON.stringify(customMovies));
+          rebuildMoviesAfterBackupImport();
+          showToast('Pel·lícules importades correctament.');
+          return;
+        }
+        if (!parsed || parsed.format !== 'cataleg-pellicules-backup' || parsed.version !== 1) {
+          throw new Error('El fitxer no sembla una còpia de seguretat compatible.');
+        }
+        if (!confirm('Vols restaurar aquesta còpia? Les caràtules i preferides s’afegiran a les actuals; les pel·lícules personalitzades amb el mateix identificador s’actualitzaran.')) return;
+
+        const incomingPosters = parsed.posterCache && typeof parsed.posterCache === 'object' ? parsed.posterCache : {};
+        posterCache = { ...posterCache, ...incomingPosters };
+        const byId = new Map(customMovies.map(m => [String(m.id), m]));
+        (Array.isArray(parsed.customMovies) ? parsed.customMovies : []).filter(m => m && m.id != null).forEach(m => byId.set(String(m.id), m));
+        customMovies = Array.from(byId.values());
+        const incomingFavorites = Array.isArray(parsed.favorites) ? parsed.favorites : [];
+        incomingFavorites.forEach(id => favorites.add(id));
+
+        localStorage.setItem('movie_posters_cache', JSON.stringify(posterCache));
+        localStorage.setItem('movie_custom_entries', JSON.stringify(customMovies));
+        localStorage.setItem('movie_favorites', JSON.stringify(Array.from(favorites)));
+        rebuildMoviesAfterBackupImport();
+        updateFavoritesBadge();
+        showToast('Còpia restaurada correctament! 🎬');
+      } catch (err) {
+        alert('No s’ha pogut importar la còpia: ' + (err && err.message ? err.message : 'fitxer no vàlid'));
+      } finally {
+        input.value = '';
+      }
+    }
+
+    function rebuildMoviesAfterBackupImport() {
+      ALL_MOVIES = [...BASE_MOVIES, ...customMovies].map(m => ({
+        ...m,
+        title: sanitizeText(m.title),
+        category: sanitizeText(m.category),
+        disk: sanitizeText(m.disk),
+        raw: sanitizeText(m.raw),
+        languages: (m.languages || []).map(l => sanitizeText(l)),
+        poster: posterCache[m.id] || m.poster || null
+      }));
+      refreshCategories();
+      applyFilters();
     }
 
     function copyFileName(rawName) {
